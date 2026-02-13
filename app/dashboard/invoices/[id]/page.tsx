@@ -46,13 +46,16 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
       >
         <h1 style={{ fontSize: 24, fontWeight: 800 }}>Invoice {invoice.ref}</h1>
 
-        <div style={{ display: "flex", gap: 12 }}>
-          <Link
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          {/* IMPORTANT: use a plain <a> for route.ts endpoints so browser does a real download */}
+          <a
             href={`/dashboard/invoices/${invoice.id}/pdf`}
             style={{ textDecoration: "none", fontWeight: 800 }}
+            target="_blank"
+            rel="noreferrer"
           >
             Download PDF
-          </Link>
+          </a>
 
           <Link
             href={`/dashboard/invoices/${invoice.id}/payments/new`}
@@ -103,19 +106,16 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
               £{Number(invoice.total ?? 0).toFixed(2)}
             </div>
           </div>
-
           <div>
             <div style={{ fontSize: 12, opacity: 0.7 }}>Deposit</div>
             <div style={{ fontWeight: 800 }}>
               £{Number(invoice.deposit ?? 0).toFixed(2)}
             </div>
           </div>
-
           <div>
             <div style={{ fontSize: 12, opacity: 0.7 }}>Payments</div>
             <div style={{ fontWeight: 800 }}>£{paymentsTotal.toFixed(2)}</div>
           </div>
-
           <div>
             <div style={{ fontSize: 12, opacity: 0.7 }}>Balance</div>
             <div style={{ fontWeight: 900 }}>
@@ -185,20 +185,7 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
               </div>
             ))}
           </div>
-        ) : (
-          <div style={{ fontSize: 14, opacity: 0.75 }}>
-            No payments recorded yet.
-          </div>
-        )}
-      </div>
-
-      <div style={{ marginTop: 14 }}>
-        <Link
-          href="/dashboard/invoices"
-          style={{ textDecoration: "none", fontWeight: 700, opacity: 0.85 }}
-        >
-          ← Back to invoices
-        </Link>
+        ) : null}
       </div>
     </div>
   );

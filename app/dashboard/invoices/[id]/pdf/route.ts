@@ -45,7 +45,7 @@ export async function GET(
   const deposit = Number(invoice.deposit || 0);
   const balance = Number(invoice.balance || 0);
 
-  // IMPORTANT: require at runtime so Next doesn't try to bundle pdfkit/fontkit
+  // IMPORTANT: require at runtime so Next doesn't try to statically bundle pdfkit/fontkit
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const PDFDocument = require("pdfkit");
 
@@ -136,13 +136,10 @@ export async function GET(
     doc.end();
   });
 
-  // Return ArrayBuffer to satisfy TS BodyInit typing everywhere
-  const arrayBuffer = pdfBuffer.buffer.slice(
-    pdfBuffer.byteOffset,
-    pdfBuffer.byteOffset + pdfBuffer.byteLength
-  );
+  // Blob avoids TS/undici BodyInit typing issues
+  const blob = new Blob([pdfBuffer], { type: "application/pdf" });
 
-  return new Response(arrayBuffer, {
+  return new Response(blob, {
     headers: {
       "Content-Type": "application/pdf",
       "Content-Disposition": `attachment; filename="invoice-${invoice.ref}.pdf"`,

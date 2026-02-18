@@ -1,161 +1,179 @@
-import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export default async function InvoicePrintPage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const supabase = await createClient();
+export async function GET(
+  req: Request,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supabase = await createClient();
 
-  const { data: userData } = await supabase.auth.getUser();
-  if (!userData.user) redirect("/login");
+    const { data: userData, error: userErr } = await supabase.auth.getUser();
+    if (userErr) {
+      console.error("PDF: auth.getUser error:", userErr);
+      return new Response(
+        JSON.stringify({ error: "Auth error", details: userErr.message }),
+        { status: 401, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
-  const { data: invoice, error } = await supabase
-    .from("invoices")
-    .select("*")
-    .eq("id", params.id)
-    .eq("user_id", userData.user.id)
-    .single();
+    if (!userData.user) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
-  if (error || !invoice) notFound();
+    const { data: invoice, error: invErr } = await supabase
+      .from("invoices")
+      .select("*")
+      .eq("id", params.id)
+      .eq("user_id", userData.user.id)
+      .single();
 
-  const { data: payments } = await supabase
-    .from("payments")
-    .select("*")
-    .eq("invoice_id", params.id)
-    .eq("user_id", userData.user.id)
-    .order("created_at", { ascending: true });
+    if (invErr || !invoice) {
+      console.error("PDF: invoice fetch error:", invErr);
+      return new Response(JSON.stringify({ error: "Invoice not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
-  const paymentsTotal =
-    (payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0) || 0;
+    const { data: payments, error: payErr } = await supabase
+      .from("payments")
+      .select("amount, paid_at, method, notes, created_at")
+      .eq("invoice_id", params.id)
+      .eq("user_id", userData.user.id)
+      .order("created_at", { ascending: true });
 
-  const money = (n: any) => `£${Number(n || 0).toFixed(2)}`;
+    if (payErr) {
+      console.error("PDF: payments fetch error:", payErr);
+    }
 
-  return (
-    <html>
-      <head>
-        <title>Invoice {invoice.ref}</title>
-        <style>{`
-          body { font-family: Arial, sans-serif; padding: 24px; color:#111; }
-          .wrap { max-width: 800px; margin: 0 auto; }
-          .row { display:flex; justify-content:space-between; gap:16px; }
-          .box { border:1px solid #e5e5e5; border-radius:12px; padding:16px; margin-top:12px; }
-          h1 { margin:0 0 8px 0; }
-          h2 { margin:0 0 10px 0; font-size:16px; }
-          .muted { color:#666; font-size:12px; }
-          table { width:100%; border-collapse: collapse; margin-top:8px; }
-          th, td { text-align:left; padding:8px; border-bottom:1px solid #eee; font-size: 13px;}
-          .totalrow td { font-weight:700; }
-          @media print {
-            .noprint { display:none; }
-            body { padding:0; }
-            .box { border:1px solid #ddd; }
+    const paymentsTotal =
+      (payments || []).reduce((sum, p) => sum + Number(p.amount || 0), 0) || 0;
+
+    const total = Number(invoice.total || 0);
+    const deposit = Number(invoice.deposit || 0);
+    const balance = Number(invoice.balance || 0);
+
+    // ✅ Robust module loading for pdfkit (CJS/ESM compatibility)
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const pdfkitMod = require("pdfkit");
+    const PDFDocument =
+      pdfkitMod?.default ?? pdfkitMod?.PDFDocument ?? pdfkitMod;
+
+    if (typeof PDFDocument !== "function") {
+      console.error("PDF: pdfkit module shape unexpected:", pdfkitMod);
+      return new Response(
+        JSON.stringify({
+          error: "PDF generation failed",
+          message: "pdfkit did not export a constructor",
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+
+    const pdfBuffer: Buffer = await new Promise((resolve, reject) => {
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", (e: any) => reject(e));
+
+      const money = (n: number) => `£${Number(n || 0).toFixed(2)}`;
+
+      doc.fontSize(20).fillColor("#000").text("MKR Control Hub", { align: "left" });
+      doc.fontSize(11).fillColor("#555").text("Invoice", { align: "left" });
+      doc.moveDown(1);
+      doc.fillColor("#000");
+
+      doc.fontSize(14).text(`Invoice Ref: ${invoice.ref}`);
+      doc.fontSize(11).text(`Client: ${invoice.client_name}`);
+      doc.fontSize(11).text(`Event Date: ${invoice.event_date ?? "-"}`);
+      doc.fontSize(11).text(`Status: ${invoice.status ?? "Draft"}`);
+
+      doc.moveDown(1);
+
+      doc.fontSize(12).text("Summary", { underline: true });
+      doc.moveDown(0.5);
+
+      doc.fontSize(11).text(`Total: ${money(total)}`);
+      doc.fontSize(11).text(`Deposit: ${money(deposit)}`);
+      doc.fontSize(11).text(`Payments: ${money(paymentsTotal)}`);
+
+      doc.moveDown(0.25);
+      doc.strokeColor("#eaeaea").moveTo(50, doc.y).lineTo(545, doc.y).stroke();
+      doc.moveDown(0.25);
+
+      doc.fontSize(12).text(`Balance Due: ${money(balance)}`);
+
+      if (invoice.notes) {
+        doc.moveDown(1);
+        doc.fontSize(12).text("Notes", { underline: true });
+        doc.moveDown(0.4);
+        doc.fontSize(11).text(String(invoice.notes));
+      }
+
+      doc.moveDown(1);
+      doc.fontSize(12).text("Payments", { underline: true });
+      doc.moveDown(0.4);
+
+      if (!payments?.length) {
+        doc.fontSize(11).fillColor("#555").text("No payments recorded.");
+        doc.fillColor("#000");
+      } else {
+        payments.forEach((p: any, idx: number) => {
+          const labelParts: string[] = [];
+          if (p.paid_at) labelParts.push(`Date: ${p.paid_at}`);
+          if (p.method) labelParts.push(`Method: ${p.method}`);
+          const label = labelParts.length ? `(${labelParts.join(" • ")})` : "";
+
+          doc
+            .fontSize(11)
+            .fillColor("#000")
+            .text(`${idx + 1}. ${money(Number(p.amount || 0))} ${label}`);
+
+          if (p.notes) {
+            doc.fontSize(10).fillColor("#555").text(`   ${p.notes}`);
           }
-        `}</style>
-      </head>
-      <body>
-        <div className="wrap">
-          <div className="noprint" style={{ marginBottom: 16 }}>
-            <button
-              onClick={() => window.print()}
-              style={{
-                padding: "10px 14px",
-                borderRadius: 10,
-                border: "1px solid #ddd",
-                background: "#fff",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
-            >
-              Print / Save as PDF
-            </button>
-          </div>
 
-          <div className="row">
-            <div>
-              <h1>MKR Control Hub</h1>
-              <div className="muted">Invoice</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontWeight: 800 }}>Ref: {invoice.ref}</div>
-              <div className="muted">Status: {invoice.status}</div>
-              <div className="muted">Event date: {invoice.event_date ?? "-"}</div>
-            </div>
-          </div>
+          doc.moveDown(0.2);
+        });
+      }
 
-          <div className="box">
-            <div className="muted">Client</div>
-            <div style={{ fontSize: 18, fontWeight: 800 }}>
-              {invoice.client_name}
-            </div>
+      doc.moveDown(2);
+      doc
+        .fontSize(9)
+        .fillColor("#777")
+        .text(
+          "Generated by MKR Control Hub • Please keep this invoice for your records.",
+          { align: "center" }
+        );
 
-            <div style={{ marginTop: 12 }} className="row">
-              <div>
-                <div className="muted">Total</div>
-                <div style={{ fontWeight: 800 }}>{money(invoice.total)}</div>
-              </div>
-              <div>
-                <div className="muted">Deposit</div>
-                <div style={{ fontWeight: 800 }}>{money(invoice.deposit)}</div>
-              </div>
-              <div>
-                <div className="muted">Payments</div>
-                <div style={{ fontWeight: 800 }}>{money(paymentsTotal)}</div>
-              </div>
-              <div>
-                <div className="muted">Balance</div>
-                <div style={{ fontWeight: 900 }}>{money(invoice.balance)}</div>
-              </div>
-            </div>
+      doc.end();
+    });
 
-            {invoice.notes ? (
-              <div style={{ marginTop: 14 }}>
-                <div className="muted">Notes</div>
-                <div style={{ whiteSpace: "pre-wrap" }}>{invoice.notes}</div>
-              </div>
-            ) : null}
-          </div>
+    return new Response(pdfBuffer as unknown as BodyInit, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="invoice-${invoice.ref}.pdf"`,
+        "Cache-Control": "no-store",
+      },
+    });
+  } catch (err: any) {
+    console.error("PDF: route crashed:", err);
 
-          <div className="box">
-            <h2>Payments</h2>
-            {!payments?.length ? (
-              <div className="muted">No payments recorded.</div>
-            ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Amount</th>
-                    <th>Date</th>
-                    <th>Method</th>
-                    <th>Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {payments.map((p) => (
-                    <tr key={p.id}>
-                      <td>{money(p.amount)}</td>
-                      <td>{p.paid_at ?? "-"}</td>
-                      <td>{p.method ?? "-"}</td>
-                      <td>{p.notes ?? ""}</td>
-                    </tr>
-                  ))}
-                  <tr className="totalrow">
-                    <td>{money(paymentsTotal)}</td>
-                    <td colSpan={3}>Total payments</td>
-                  </tr>
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          <div style={{ marginTop: 18 }} className="muted">
-            Generated by MKR Control Hub
-          </div>
-        </div>
-      </body>
-    </html>
-  );
+    return new Response(
+      JSON.stringify({
+        error: "PDF generation failed",
+        message: err?.message || String(err),
+      }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
+  }
 }

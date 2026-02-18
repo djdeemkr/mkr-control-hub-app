@@ -50,7 +50,6 @@ export async function GET(
 
     if (payErr) {
       console.error("PDF: payments fetch error:", payErr);
-      // Not fatal – continue with empty payments
     }
 
     const paymentsTotal =
@@ -60,9 +59,22 @@ export async function GET(
     const deposit = Number(invoice.deposit || 0);
     const balance = Number(invoice.balance || 0);
 
-    // IMPORTANT: require at runtime so Next doesn't try to bundle pdfkit/fontkit
+    // ✅ Robust module loading for pdfkit (CJS/ESM compatibility)
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const PDFDocument = require("pdfkit");
+    const pdfkitMod = require("pdfkit");
+    const PDFDocument =
+      pdfkitMod?.default ?? pdfkitMod?.PDFDocument ?? pdfkitMod;
+
+    if (typeof PDFDocument !== "function") {
+      console.error("PDF: pdfkit module shape unexpected:", pdfkitMod);
+      return new Response(
+        JSON.stringify({
+          error: "PDF generation failed",
+          message: "pdfkit did not export a constructor",
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
 
     const doc = new PDFDocument({ size: "A4", margin: 50 });
 
@@ -121,9 +133,10 @@ export async function GET(
           if (p.method) labelParts.push(`Method: ${p.method}`);
           const label = labelParts.length ? `(${labelParts.join(" • ")})` : "";
 
-          doc.fontSize(11).fillColor("#000").text(
-            `${idx + 1}. ${money(Number(p.amount || 0))} ${label}`
-          );
+          doc
+            .fontSize(11)
+            .fillColor("#000")
+            .text(`${idx + 1}. ${money(Number(p.amount || 0))} ${label}`);
 
           if (p.notes) {
             doc.fontSize(10).fillColor("#555").text(`   ${p.notes}`);
@@ -145,7 +158,6 @@ export async function GET(
       doc.end();
     });
 
-    // Return buffer directly (cast avoids TS BodyInit drama)
     return new Response(pdfBuffer as unknown as BodyInit, {
       headers: {
         "Content-Type": "application/pdf",
@@ -161,10 +173,7 @@ export async function GET(
         error: "PDF generation failed",
         message: err?.message || String(err),
       }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
+      { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
 }

@@ -47,14 +47,14 @@ export default async function InvoiceDetailPage({ params }: PageProps) {
         <h1 style={{ fontSize: 24, fontWeight: 800 }}>Invoice {invoice.ref}</h1>
 
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          {/* IMPORTANT: use a plain <a> for route.ts endpoints so browser does a real download */}
+          {/* ✅ Print page (reliable). Users can Save as PDF via browser print dialog */}
           <a
-            href={`/dashboard/invoices/${invoice.id}/pdf`}
+            href={`/dashboard/invoices/${invoice.id}/print`}
             style={{ textDecoration: "none", fontWeight: 800 }}
             target="_blank"
             rel="noreferrer"
           >
-            Download PDF
+            Print / Save PDF
           </a>
 
           <Link
